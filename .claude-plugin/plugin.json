@@ -1,0 +1,13 @@
+{
+  "name": "gigabuddy",
+  "displayName": "Gigabuddy",
+  "description": "Real-time awareness, coordination, and collaboration for Claude Code agents via Gigabuddy places. Agents see peers join and leave, what files they're focused on, conflicts, and messages — injected straight into context.",
+  "version": "0.1.1",
+  "author": {
+    "name": "Gigabuddy",
+    "url": "https://gigabuddy.com"
+  },
+  "homepage": "https://github.com/gigabuddy/claude-plugin",
+  "keywords": ["awareness", "collaboration", "multi-agent", "presence", "mcp"],
+  "mcpServers": "./.mcp.json"
+}

@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+#
+# Gigabuddy — UserPromptSubmit hook
+#
+# Runs at the start of each turn. Three jobs:
+#   1. Register this Claude Code session so the MCP server can auto-connect
+#      with a stable identity (writes a pending-connect file the server polls).
+#   2. Re-baseline the agent on the full current peer state of the place.
+#   3. First-run onboarding nudges: not-signed-in (once per session) and
+#      statusline-not-configured (once ever) — both agent-mediated offers,
+#      since neither can be automated at plugin-install time.
+#
+# Best-effort throughout: never fail the prompt. The scratch dir is shared
+# with the MCP server and is computed identically (project-local .gigabuddy).
+
+set -uo pipefail
+
+INPUT=$(cat)
+SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || true)
+[ -z "$SESSION_ID" ] && exit 0
+
+# Repo-root anchored so worktrees share one state dir with the MCP server.
+# shellcheck source=lib/gigabuddy-dir.sh
+. "$(dirname "${BASH_SOURCE[0]}")/lib/gigabuddy-dir.sh"
+MYC_DIR="$(gigabuddy_dir)"
+# This session's own dir — every per-session file lives here (one id scheme,
+# the host session id verbatim; mirrors sessionDir() in scratch.ts).
+SDIR="$MYC_DIR/sessions/cc_$SESSION_ID"
+
+# --- 1. Register session for the server's deferred auto-connect -------------
+{
+  if [ -d "$MYC_DIR" ]; then
+    mkdir -p "$SDIR" 2>/dev/null || true
+    PC="$SDIR/pending-connect.json"
+    printf '{"claudeSessionId":"%s","ts":"%s"}\n' \
+      "$SESSION_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PC.tmp" 2>/dev/null \
+      && mv "$PC.tmp" "$PC" 2>/dev/null || true
+  fi
+} || true
+
+# --- 2. Inject the full peer baseline ---------------------------------------
+# Read the inbox for THIS session, not a stale one from a dead session.
+INBOX="$SDIR/inbox.json"
+if [ ! -f "$INBOX" ]; then
+  # Not connected. Usually the server is just booting — but a user who has
+  # never signed in will NEVER connect, and nothing tells them why (the
+  # server's stderr hint is invisible in normal use, and the login tool may
+  # be deferred out of the agent's visible tool list). Surface it once per
+  # session so the agent offers the in-chat `login` flow.
+  if [ ! -f "$HOME/.gigabuddy/credentials.json" ] && [ ! -f "$HOME/.gigabuddy/credentials.staging.json" ]; then
+    NUDGE_FLAG="${TMPDIR:-/tmp}/gigabuddy-login-nudge-$SESSION_ID"
+    if [ ! -f "$NUDGE_FLAG" ]; then
+      : > "$NUDGE_FLAG" 2>/dev/null || true
+      NUDGE="Gigabuddy is installed but not signed in, so awareness/presence is inactive. At a natural moment this turn, offer to sign the user in: call the gigabuddy \`login\` tool and relay the URL + code it returns (the gigabuddy tools exist but may be deferred — find them via tool search, never by searching the filesystem). One-time setup. If the user declines, drop it — this hint is once per session."
+      ESCAPED=$(printf '%s' "$NUDGE" | jq -Rs . 2>/dev/null) \
+        && printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":%s}}\n' "$ESCAPED"
+    fi
+  fi
+  exit 0
+fi
+
+INBOX_JSON=$(cat "$INBOX" 2>/dev/null || echo '{}')
+SEQ=$(printf '%s' "$INBOX_JSON" | jq -r '.seq // 0' 2>/dev/null || echo 0)
+EVENT_COUNT=$(printf '%s' "$INBOX_JSON" | jq '.events | length' 2>/dev/null || echo 0)
+
+# Read place name from connection.json if available
+PLACE_NAME=""
+CONN_FILE="$MYC_DIR/connection.json"
+if [ -f "$CONN_FILE" ]; then
+  PLACE_NAME=$(jq -r '.placeName // empty' "$CONN_FILE" 2>/dev/null || true)
+fi
+
+CONTEXT=$(printf '%s' "$INBOX_JSON" | jq -r --arg placeName "$PLACE_NAME" --argjson now "$(date +%s)" '
+  "You are " + .self.displayName
+  + (if $placeName != "" then " in " + $placeName else "" end)
+  + "\n"
+  + ( if (.peers | length) > 0 then
+      "Peers here:\n" + ([.peers[] |
+        "  " + .displayName
+        + (if .owner then " (" + .owner + ")" else "" end)
+        + (if .action then " — " + .action else "" end)
+        + (if .repo then " [" + .repo + (if .branch then "/" + .branch else "" end) + "]" else "" end)
+        + (if .focus and (.focus | length) > 0 then " touching: " + (.focus | join(", ")) else "" end)
+        # Recency: peers carry lastActiveAt but render flat, so a parked peer
+        # looks as present as one who just pinged. Show "idle Xm" once stale
+        # (>= ~1 min); active peers stay clean. try/catch so a bad/absent stamp
+        # degrades to nothing rather than blanking the whole block.
+        + ( if .lastActiveAt then
+              ( ($now - ( .lastActiveAt | sub("\\.[0-9]+";"") | try fromdateiso8601 catch $now )) as $age
+                | if $age >= 90 then " · idle " + (($age/60)|floor|tostring) + "m"
+                  elif $age >= 45 then " · idle 1m"
+                  else "" end )
+            else "" end )
+      ] | join("\n"))
+    else "Peers here: none" end )
+  # House rules: standing directives for this place, re-stamped every turn
+  # (headlines only — the connect briefing carried the full block).
+  + ( if ((.houseRules // []) | length) > 0 then
+      "\nHouse rules here (standing directives):\n"
+      + ([.houseRules[] | "  ▸ " + .] | join("\n"))
+    else "" end )
+  + ( if (.events | length) > 0 then
+      "\nRecent activity:\n" + ([.events[-8:][] |
+        if .type == "peer_joined" then "  → \(.peer) joined"
+        elif .type == "peer_left" then "  ← \(.peer) left"
+        elif .type == "peer_changed" then "  △ \(.peer): \(.detail)"
+        elif .type == "conflict" then "  ⚠ \(.peer) also editing \(.files | join(", "))"
+        elif .type == "page_updated" then "  📄 \(.detail) updated by \(.peer)"
+        elif .type == "attachment" then "  📎 \(.peer) attached \(.detail) to your activity"
+        elif .type == "mention" then "  💬 \(.peer) mentioned you: \(.detail)" + (if .threadId then " [reply in thread \(.threadId)]" else "" end)
+        elif .type == "thread_reply" then "  💬 \(.peer) replied in a thread you follow: \(.detail // "")" + (if .threadId then " [thread \(.threadId)]" else "" end)
+        elif .type == "ask" then "  📨 ASK for you from \(.peer): \(.detail // "")" + (if .threadId then " [discuss in thread \(.threadId)]" else "" end)
+        else "  \(.type): \(.peer)" end
+      ] | join("\n"))
+    else "" end )
+' 2>/dev/null || true)
+
+# --- 3. One-time statusline setup offer --------------------------------------
+# Claude Code does NOT apply a plugin settings.json `statusLine` (only the
+# `agent`/`subagentStatusLine` keys are honored from plugin settings), so the
+# gigabuddy status bar needs an entry in the USER's own settings. If no
+# statusLine is configured anywhere, nudge the agent ONCE EVER (persistent
+# flag) to offer wiring it up in-chat. Any existing statusLine — gigabuddy or
+# not — means stay silent: never offer to clobber the user's own status bar.
+if [ -n "$CONTEXT" ] && [ ! -f "$HOME/.gigabuddy/statusline-nudge-shown" ]; then
+  if ! grep -qs '"statusLine"' \
+      "$HOME/.claude/settings.json" "$HOME/.claude/settings.local.json" \
+      "${CLAUDE_PROJECT_DIR:-$PWD}/.claude/settings.json" \
+      "${CLAUDE_PROJECT_DIR:-$PWD}/.claude/settings.local.json"; then
+    mkdir -p "$HOME/.gigabuddy" 2>/dev/null || true
+    : > "$HOME/.gigabuddy/statusline-nudge-shown" 2>/dev/null || true
+    SL_NUDGE=""
+    # Quoted heredoc: the snippet must land verbatim (no expansion here).
+    IFS= read -r -d '' SL_NUDGE <<'SLEOF' || true
+One-time setup offer — the Gigabuddy status bar isn't wired up (Claude Code ignores plugin statusline settings, so it needs one entry in the user's own settings). At a natural moment, offer it: a live status line showing place, peers, current activity, and idle time at the bottom of the terminal. If the user wants it, merge this top-level key into ~/.claude/settings.json (preserve their other settings) and tell them to restart Claude Code:
+
+  "statusLine": {
+    "type": "command",
+    "command": "bash -c 'script=$(ls -td ~/.claude/plugins/cache/gigabuddy/gigabuddy/*/scripts/statusline.sh 2>/dev/null | head -1); [ -f \"$script\" ] && exec \"$script\" || echo \"🍄 no plugin\"'",
+    "refreshInterval": 5
+  }
+
+If they decline, drop it — this offer never repeats.
+SLEOF
+    [ -n "$SL_NUDGE" ] && CONTEXT="$CONTEXT
+
+$SL_NUDGE"
+  fi
+fi
+
+# Baseline the seq so the PreToolUse hook only injects deltas from here on.
+mkdir -p "$SDIR" 2>/dev/null || true
+printf '{"lastSeenSeq":%s,"lastEventCount":%s}\n' "$SEQ" "$EVENT_COUNT" \
+  > "$SDIR/hook-state.json.tmp" 2>/dev/null \
+  && mv "$SDIR/hook-state.json.tmp" "$SDIR/hook-state.json" 2>/dev/null || true
+
+if [ -n "$CONTEXT" ]; then
+  ESCAPED=$(printf 'Gigabuddy awareness —\n%s' "$CONTEXT" | jq -Rs .)
+  printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":%s}}\n' "$ESCAPED"
+fi
+
+exit 0

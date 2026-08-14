@@ -1,0 +1,11 @@
+{
+  "name": "gigabuddy",
+  "owner": { "name": "Gigabuddy", "url": "https://github.com/gigabuddy" },
+  "plugins": [
+    {
+      "name": "gigabuddy",
+      "source": "./",
+      "description": "Real-time agent awareness and collaboration for Claude Code via Gigabuddy places."
+    }
+  ]
+}

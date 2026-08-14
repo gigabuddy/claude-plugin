@@ -1,0 +1,29 @@
+{
+  "statusLine": {
+    "type": "command",
+    "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/statusline.sh",
+    "padding": 0
+  },
+  "permissions": {
+    "allow": [
+      "mcp__plugin_gigabuddy_agent__connect",
+      "mcp__plugin_gigabuddy_agent__list_places",
+      "mcp__plugin_gigabuddy_agent__disconnect",
+      "mcp__plugin_gigabuddy_agent__send_message",
+      "mcp__plugin_gigabuddy_agent__get_messages",
+      "mcp__plugin_gigabuddy_agent__wait_for_reply",
+      "mcp__plugin_gigabuddy_agent__get_awareness",
+      "mcp__plugin_gigabuddy_agent__session_status",
+      "mcp__plugin_gigabuddy_agent__start_activity",
+      "mcp__plugin_gigabuddy_agent__complete_activity",
+      "mcp__plugin_gigabuddy_agent__get_activities",
+      "mcp__plugin_gigabuddy_agent__set_intent",
+      "mcp__plugin_gigabuddy_agent__list_pages",
+      "mcp__plugin_gigabuddy_agent__get_page",
+      "mcp__plugin_gigabuddy_agent__create_page",
+      "mcp__plugin_gigabuddy_agent__update_page",
+      "mcp__plugin_gigabuddy_agent__log",
+      "mcp__plugin_gigabuddy_agent__escalate"
+    ]
+  }
+}

@@ -35,6 +35,19 @@ SDIR="$MYC_DIR/sessions/cc_$SESSION_ID"
     printf '{"claudeSessionId":"%s","ts":"%s"}\n' \
       "$SESSION_ID" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$PC.tmp" 2>/dev/null \
       && mv "$PC.tmp" "$PC" 2>/dev/null || true
+    # A prompt is activity: touch the outbox ts so lastActiveAt (peers' idle
+    # clock, and the cache-warmth proxy) updates on prompts too, not only on
+    # tool calls. Without this a conversational session reads as idle forever.
+    # Same atomic tmp+mv as the PreToolUse writer; last writer wins, both fine.
+    OB="$SDIR/outbox.json"
+    TS_NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    if [ -f "$OB" ]; then
+      jq --arg ts "$TS_NOW" '.ts = $ts' "$OB" > "$OB.tmp" 2>/dev/null \
+        && mv "$OB.tmp" "$OB" 2>/dev/null || true
+    else
+      printf '{"ts":"%s"}\n' "$TS_NOW" > "$OB.tmp" 2>/dev/null \
+        && mv "$OB.tmp" "$OB" 2>/dev/null || true
+    fi
   fi
 } || true
 
@@ -71,8 +84,16 @@ if [ -f "$CONN_FILE" ]; then
 fi
 
 CONTEXT=$(printf '%s' "$INBOX_JSON" | jq -r --arg placeName "$PLACE_NAME" --argjson now "$(date +%s)" '
+  # Snapshot freshness: inbox.json is rewritten whenever any peer frame arrives
+  # (at least every heartbeat while the socket lives), so a snapshot minutes old
+  # means OUR connection is down — everything below is then a guess, and saying
+  # so beats rendering stale peers as live. The sidecar heals on its next beat.
+  ($now - ( (.ts // "") | sub("\\.[0-9]+";"") | try fromdateiso8601 catch $now )) as $snapAge |
   "You are " + .self.displayName
   + (if $placeName != "" then " in " + $placeName else "" end)
+  + ( if $snapAge >= 180 then
+        "\n⚠ Awareness snapshot is " + (($snapAge/60)|floor|tostring) + "m old — live connection likely down; peer info below may be stale."
+      else "" end )
   + "\n"
   + ( if (.peers | length) > 0 then
       "Peers here:\n" + ([.peers[] |
@@ -81,16 +102,28 @@ CONTEXT=$(printf '%s' "$INBOX_JSON" | jq -r --arg placeName "$PLACE_NAME" --argj
         + (if .action then " — " + .action else "" end)
         + (if .repo then " [" + .repo + (if .branch then "/" + .branch else "" end) + "]" else "" end)
         + (if .focus and (.focus | length) > 0 then " touching: " + (.focus | join(", ")) else "" end)
-        # Recency: peers carry lastActiveAt but render flat, so a parked peer
-        # looks as present as one who just pinged. Show "idle Xm" once stale
-        # (>= ~1 min); active peers stay clean. try/catch so a bad/absent stamp
-        # degrades to nothing rather than blanking the whole block.
-        + ( if .lastActiveAt then
-              ( ($now - ( .lastActiveAt | sub("\\.[0-9]+";"") | try fromdateiso8601 catch $now )) as $age
-                | if $age >= 90 then " · idle " + (($age/60)|floor|tostring) + "m"
-                  elif $age >= 45 then " · idle 1m"
-                  else "" end )
-            else "" end )
+        # Reachability + recency, kept honest by separating two signals:
+        #  - beatAt (epoch ms, re-stamped every ~25s heartbeat) = LIVENESS.
+        #    Stale beacon → the peer is unreachable; its idle time is unknowable,
+        #    so say "unreachable Xm" from the beacon, never a made-up idle clock.
+        #  - lastActiveAt (ISO) = last did something (tool call / prompt). Only
+        #    rendered while the beacon is fresh: "idle Xm" then honestly means
+        #    "been quiet X minutes but still here". ❄ once idle passes the
+        #    peer'\''s own cache-cold threshold (coldSecs, default 1h): waking it
+        #    now costs a full cache re-prime.
+        # No beatAt = older plugin; treat as live (isBeaconFresh semantics).
+        # try/catch so a bad stamp degrades to nothing, not a blank block.
+        + ( ( (.beatAt == null) or (($now * 1000 - .beatAt) < 90000) ) as $live
+            | if ($live | not) then
+                " · ⚡ unreachable " + (((($now - (.beatAt / 1000)) / 60) | floor | tostring)) + "m"
+              elif .lastActiveAt then
+                ( ($now - ( .lastActiveAt | sub("\\.[0-9]+";"") | try fromdateiso8601 catch $now )) as $age
+                  | if $age >= 90 then
+                      " · idle " + (($age/60)|floor|tostring) + "m"
+                      + (if $age >= (.coldSecs // 3600) then " ❄" else "" end)
+                    elif $age >= 45 then " · idle 1m"
+                    else "" end )
+              else "" end )
       ] | join("\n"))
     else "Peers here: none" end )
   # House rules: standing directives for this place, re-stamped every turn

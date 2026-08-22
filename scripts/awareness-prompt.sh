@@ -83,8 +83,7 @@ if [ -f "$CONN_FILE" ]; then
   PLACE_NAME=$(jq -r '.placeName // empty' "$CONN_FILE" 2>/dev/null || true)
 fi
 
-SELF_REPO=$(jq -r '.repo // empty' "$SDIR/outbox.json" 2>/dev/null || true)
-CONTEXT=$(printf '%s' "$INBOX_JSON" | jq -r --arg placeName "$PLACE_NAME" --arg selfRepo "$SELF_REPO" --argjson now "$(date +%s)" '
+CONTEXT=$(printf '%s' "$INBOX_JSON" | jq -r --arg placeName "$PLACE_NAME" --argjson now "$(date +%s)" '
   # Snapshot freshness: inbox.json is rewritten whenever any peer frame arrives
   # (at least every heartbeat while the socket lives), so a snapshot minutes old
   # means OUR connection is down — everything below is then a guess, and saying
@@ -96,22 +95,37 @@ CONTEXT=$(printf '%s' "$INBOX_JSON" | jq -r --arg placeName "$PLACE_NAME" --arg 
         "\n⚠ Awareness snapshot is " + (($snapAge/60)|floor|tostring) + "m old — live connection likely down; peer info below may be stale."
       else "" end )
   + "\n"
-  # Peer ROSTER RETIRED (2026-08-22, idea:OJuidt4hrY_b): the full per-turn
-  # listing (every peer, absolute `touching:` paths, idle clocks) cost ~10 KB a
-  # turn in a busy room with near-zero actionable content. Until the awareness
-  # digest lands (page:OaPM-L3NmeCg), render ONE summary line — counts plus the
-  # live peers sharing this repo — and point at get_awareness for the roster.
-  # Conflict events still arrive via the PreToolUse hook; events render below.
-  + ( (.peers // []) as $ps
-      | ([ $ps[] | select(
-            ( (.beatAt == null) or (($now * 1000 - .beatAt) < 90000) )
-            and ( (.lastActiveAt == null)
-                  or (($now - ( .lastActiveAt | sub("\\.[0-9]+";"") | try fromdateiso8601 catch $now )) < (.coldSecs // 3600)) )
-          ) ]) as $live
-      | ([ $live[] | select($selfRepo != "" and .repo == $selfRepo) | .displayName ]) as $here
-      | "Peers: " + ($ps | length | tostring) + " in the room · " + ($live | length | tostring) + " live"
-        + (if ($here | length) > 0 then " · live in this repo: " + ($here | join(", ")) else "" end)
-        + " (get_awareness for the full roster)" )
+  + ( if (.peers | length) > 0 then
+      "Peers here:\n" + ([.peers[] |
+        "  " + .displayName
+        + (if .owner then " (" + .owner + ")" else "" end)
+        + (if .action then " — " + .action else "" end)
+        + (if .repo then " [" + .repo + (if .branch then "/" + .branch else "" end) + "]" else "" end)
+        + (if .focus and (.focus | length) > 0 then " touching: " + (.focus | join(", ")) else "" end)
+        # Reachability + recency, kept honest by separating two signals:
+        #  - beatAt (epoch ms, re-stamped every ~25s heartbeat) = LIVENESS.
+        #    Stale beacon → the peer is unreachable; its idle time is unknowable,
+        #    so say "unreachable Xm" from the beacon, never a made-up idle clock.
+        #  - lastActiveAt (ISO) = last did something (tool call / prompt). Only
+        #    rendered while the beacon is fresh: "idle Xm" then honestly means
+        #    "been quiet X minutes but still here". ❄ once idle passes the
+        #    peer'\''s own cache-cold threshold (coldSecs, default 1h): waking it
+        #    now costs a full cache re-prime.
+        # No beatAt = older plugin; treat as live (isBeaconFresh semantics).
+        # try/catch so a bad stamp degrades to nothing, not a blank block.
+        + ( ( (.beatAt == null) or (($now * 1000 - .beatAt) < 90000) ) as $live
+            | if ($live | not) then
+                " · ⚡ unreachable " + (((($now - (.beatAt / 1000)) / 60) | floor | tostring)) + "m"
+              elif .lastActiveAt then
+                ( ($now - ( .lastActiveAt | sub("\\.[0-9]+";"") | try fromdateiso8601 catch $now )) as $age
+                  | if $age >= 90 then
+                      " · idle " + (($age/60)|floor|tostring) + "m"
+                      + (if $age >= (.coldSecs // 3600) then " ❄" else "" end)
+                    elif $age >= 45 then " · idle 1m"
+                    else "" end )
+              else "" end )
+      ] | join("\n"))
+    else "Peers here: none" end )
   # House rules: standing directives for this place, re-stamped every turn
   # (headlines only — the connect briefing carried the full block).
   + ( if ((.houseRules // []) | length) > 0 then

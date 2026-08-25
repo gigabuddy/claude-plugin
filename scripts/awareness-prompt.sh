@@ -68,6 +68,35 @@ if [ ! -f "$INBOX" ]; then
       ESCAPED=$(printf '%s' "$NUDGE" | jq -Rs . 2>/dev/null) \
         && printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":%s}}\n' "$ESCAPED"
     fi
+    exit 0
+  fi
+
+  # Signed in but not connected. Usually a join is seconds away (the server
+  # auto-joins the repo's pinned room on this very prompt) — say nothing. But a
+  # repo with NO pin and no cached place of its own never auto-joins, and
+  # nothing used to tell the agent, so it ran the whole session with only the
+  # pre-connect tool list (issue:4C85a7IYkilv). The server writes its
+  # resolution to autoconnect.json at boot; fall back to the pin file if that
+  # hasn't landed yet. Once per session.
+  AC_KIND=$(jq -r '.kind // empty' "$SDIR/autoconnect.json" 2>/dev/null || true)
+  if [ -z "$AC_KIND" ]; then
+    [ -f "$MYC_DIR/default-place.json" ] && AC_KIND="pinned" || AC_KIND="none"
+  fi
+  if [ "$AC_KIND" = "none" ] || [ "$AC_KIND" = "ambiguous" ]; then
+    NUDGE_FLAG="${TMPDIR:-/tmp}/gigabuddy-connect-nudge-$SESSION_ID"
+    if [ ! -f "$NUDGE_FLAG" ]; then
+      : > "$NUDGE_FLAG" 2>/dev/null || true
+      KNOWN=$(jq -r '[.places[]? | "\(.placeName // .placeId) (\(.placeId))"] | join(", ")' \
+        "$MYC_DIR/sanctioned-places.json" 2>/dev/null || true)
+      LAST=$(jq -r 'if .placeId then "\(.placeName // .placeId) (\(.placeId))" else empty end' \
+        "$MYC_DIR/connection.json" 2>/dev/null || true)
+      NUDGE="Gigabuddy: signed in but NOT connected, and this repo has no pinned room, so no auto-join will happen. The work/page/ledger verbs (search, read_work, raise, decide, load_skill, pickup_work, …) only appear once connected."
+      [ -n "$LAST" ] && NUDGE="$NUDGE Last room used here: $LAST."
+      [ -n "$KNOWN" ] && NUDGE="$NUDGE Rooms this repo has used: $KNOWN."
+      NUDGE="$NUDGE Before doing anything that needs those verbs, connect: call the gigabuddy \`connect\` tool with the placeId (add pin: true so future sessions auto-join it — the gigabuddy tools may be deferred; find them via tool search). If the user's request doesn't need Gigabuddy, mention the offline state in one line and carry on. Once per session."
+      ESCAPED=$(printf '%s' "$NUDGE" | jq -Rs . 2>/dev/null) \
+        && printf '{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":%s}}\n' "$ESCAPED"
+    fi
   fi
   exit 0
 fi

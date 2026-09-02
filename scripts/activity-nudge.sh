@@ -28,8 +28,8 @@ SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || 
 # Repo-root anchored so worktrees share one state dir with the MCP server.
 # shellcheck source=lib/gigabuddy-dir.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/gigabuddy-dir.sh"
-MYC_DIR="$(gigabuddy_dir)"
-SDIR="$MYC_DIR/sessions/cc_$SESSION_ID"
+GB_DIR="$(gigabuddy_dir)"
+SDIR="$GB_DIR/sessions/cc_$SESSION_ID"
 INBOX="$SDIR/inbox.json"
 [ -f "$INBOX" ] || exit 0   # not connected to a place → nothing to nudge
 

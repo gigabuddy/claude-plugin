@@ -22,27 +22,29 @@ SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || 
 # Repo-root anchored so worktrees share one state dir with the MCP server.
 # shellcheck source=lib/gigabuddy-dir.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/gigabuddy-dir.sh"
-MYC_DIR="$(gigabuddy_dir)"
+GB_DIR="$(gigabuddy_dir)"
 # This session's own dir — every per-session file lives here (one id scheme,
 # the host session id verbatim; mirrors sessionDir() in scratch.ts).
-SDIR="$MYC_DIR/sessions/cc_$SESSION_ID"
+SDIR="$GB_DIR/sessions/cc_$SESSION_ID"
 
 # --- 0. A real prompt ends any unattended lockdown ---------------------------
-# The channel bridge stamps unattended.json before waking an idle session;
-# channel-guard.sh confines the woken turn until the human types again. THIS
-# is "types again" — unless the prompt itself is the injected channel event
-# (guarded in case the harness routes those through this hook too).
+# The channel bridge stamps unattended.json before waking a session and the
+# Stop hook marks every turn's end (turn-ended.json); channel-guard.sh locks
+# only when BOTH exist — a wake, and no human prompt since the last turn ended.
+# THIS is the human prompt: clear both. Unless the prompt itself is the
+# injected channel event (guarded in case the harness routes those through
+# this hook too) — then the turn is channel-started and both must stand.
 {
   PROMPT_HEAD=$(printf '%s' "$INPUT" | jq -r '.prompt // empty' 2>/dev/null | head -c 12 || true)
   case "$PROMPT_HEAD" in
     "<channel"*) : ;;
-    *) rm -f "$SDIR/unattended.json" 2>/dev/null || true ;;
+    *) rm -f "$SDIR/unattended.json" "$SDIR/turn-ended.json" 2>/dev/null || true ;;
   esac
 } || true
 
 # --- 1. Register session for the server's deferred auto-connect -------------
 {
-  if [ -d "$MYC_DIR" ]; then
+  if [ -d "$GB_DIR" ]; then
     mkdir -p "$SDIR" 2>/dev/null || true
     PC="$SDIR/pending-connect.json"
     printf '{"claudeSessionId":"%s","ts":"%s"}\n' \
@@ -93,16 +95,16 @@ if [ ! -f "$INBOX" ]; then
   # hasn't landed yet. Once per session.
   AC_KIND=$(jq -r '.kind // empty' "$SDIR/autoconnect.json" 2>/dev/null || true)
   if [ -z "$AC_KIND" ]; then
-    [ -f "$MYC_DIR/default-place.json" ] && AC_KIND="pinned" || AC_KIND="none"
+    [ -f "$GB_DIR/default-place.json" ] && AC_KIND="pinned" || AC_KIND="none"
   fi
   if [ "$AC_KIND" = "none" ] || [ "$AC_KIND" = "ambiguous" ]; then
     NUDGE_FLAG="${TMPDIR:-/tmp}/gigabuddy-connect-nudge-$SESSION_ID"
     if [ ! -f "$NUDGE_FLAG" ]; then
       : > "$NUDGE_FLAG" 2>/dev/null || true
       KNOWN=$(jq -r '[.places[]? | "\(.placeName // .placeId) (\(.placeId))"] | join(", ")' \
-        "$MYC_DIR/sanctioned-places.json" 2>/dev/null || true)
+        "$GB_DIR/sanctioned-places.json" 2>/dev/null || true)
       LAST=$(jq -r 'if .placeId then "\(.placeName // .placeId) (\(.placeId))" else empty end' \
-        "$MYC_DIR/connection.json" 2>/dev/null || true)
+        "$GB_DIR/connection.json" 2>/dev/null || true)
       NUDGE="Gigabuddy: signed in but NOT connected, and this repo has no pinned room, so no auto-join will happen. The work/page/ledger verbs (search, read_work, raise, decide, load_skill, pickup_work, …) only appear once connected."
       [ -n "$LAST" ] && NUDGE="$NUDGE Last room used here: $LAST."
       [ -n "$KNOWN" ] && NUDGE="$NUDGE Rooms this repo has used: $KNOWN."
@@ -120,7 +122,7 @@ EVENT_COUNT=$(printf '%s' "$INBOX_JSON" | jq '.events | length' 2>/dev/null || e
 
 # Read place name from connection.json if available
 PLACE_NAME=""
-CONN_FILE="$MYC_DIR/connection.json"
+CONN_FILE="$GB_DIR/connection.json"
 if [ -f "$CONN_FILE" ]; then
   PLACE_NAME=$(jq -r '.placeName // empty' "$CONN_FILE" 2>/dev/null || true)
 fi

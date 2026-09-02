@@ -16,6 +16,13 @@
 # conversation isn't nagged every turn, and silent when the session isn't
 # staged or not connected. Reads only the inbox file the MCP server writes —
 # hooks have no network and no MCP access.
+#
+# Second job, unconditional and first: mark the turn boundary. The channel
+# lockdown (channel-guard.sh) is keyed on turn PROVENANCE — it locks only when
+# a wake stamp exists AND no user prompt has happened since the last turn
+# ended. This marker is the "turn ended" half; awareness-prompt.sh clears it
+# on the human's next real prompt. Without it a wake landing mid-turn would
+# lock a turn the human is watching.
 
 set -uo pipefail
 
@@ -25,8 +32,19 @@ SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // empty' 2>/dev/null || 
 
 # shellcheck source=lib/gigabuddy-dir.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/gigabuddy-dir.sh"
-MYC_DIR="$(gigabuddy_dir)"
-SDIR="$MYC_DIR/sessions/cc_$SESSION_ID"
+GB_DIR="$(gigabuddy_dir)"
+SDIR="$GB_DIR/sessions/cc_$SESSION_ID"
+
+# --- 0. Turn boundary marker (see header) -----------------------------------
+{
+  if [ -d "$GB_DIR" ]; then
+    mkdir -p "$SDIR" 2>/dev/null || true
+    TE="$SDIR/turn-ended.json"
+    printf '{"ts":"%s"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$TE.tmp" 2>/dev/null \
+      && mv "$TE.tmp" "$TE" 2>/dev/null || true
+  fi
+} || true
+
 INBOX="$SDIR/inbox.json"
 [ -f "$INBOX" ] || exit 0   # not connected → nothing to say
 

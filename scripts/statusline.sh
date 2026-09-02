@@ -50,8 +50,8 @@ PD=""
 # what surfaced as a false "(offline)".
 # shellcheck source=lib/gigabuddy-dir.sh
 . "$(dirname "${BASH_SOURCE[0]}")/lib/gigabuddy-dir.sh"
-MYC="$(CLAUDE_PROJECT_DIR="$PD" gigabuddy_dir)"
-SDIR="$MYC/sessions/cc_$SID"
+GB_DIR="$(CLAUDE_PROJECT_DIR="$PD" gigabuddy_dir)"
+SDIR="$GB_DIR/sessions/cc_$SID"
 F=""
 if [[ -n $SID && -f $SDIR/statusline.txt ]]; then
   F=$SDIR/statusline.txt
@@ -66,7 +66,7 @@ fi
 # Runs even before the renderer's file exists so the server has the window at
 # first render — and since both sides now resolve the same repo-root dir, the
 # pre-boot location is already the server's own rather than a guess.
-if [[ -n $SID && -n $MYC ]] &&
+if [[ -n $SID && -n $GB_DIR ]] &&
   [[ $INPUT =~ \"context_window_size\"[[:space:]]*:[[:space:]]*([0-9]+) ]]; then
   CTXLINE="v1 ${BASH_REMATCH[1]}"
   [[ -d $SDIR ]] || mkdir -p "$SDIR" 2>/dev/null || true
@@ -86,7 +86,7 @@ if [[ -z $F ]]; then
   # restart of Claude Code is the fix for both. A wait-stamp (epoch of the
   # first miss, written via redirection — still no forks) is how this stateless
   # reader tells "just booting" from "stuck".
-  if [[ -n $SID && -n $MYC && $NOW != 0 ]]; then
+  if [[ -n $SID && -n $GB_DIR && $NOW != 0 ]]; then
     [[ -d $SDIR ]] || mkdir -p "$SDIR" 2>/dev/null || true
     W=$SDIR/statusline-wait
     T0=""

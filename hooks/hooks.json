@@ -16,6 +16,15 @@
         "hooks": [
           {
             "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/channel-guard.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/awareness-tool.sh"
           }
         ]

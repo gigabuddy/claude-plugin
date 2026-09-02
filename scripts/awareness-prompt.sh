@@ -27,6 +27,19 @@ MYC_DIR="$(gigabuddy_dir)"
 # the host session id verbatim; mirrors sessionDir() in scratch.ts).
 SDIR="$MYC_DIR/sessions/cc_$SESSION_ID"
 
+# --- 0. A real prompt ends any unattended lockdown ---------------------------
+# The channel bridge stamps unattended.json before waking an idle session;
+# channel-guard.sh confines the woken turn until the human types again. THIS
+# is "types again" — unless the prompt itself is the injected channel event
+# (guarded in case the harness routes those through this hook too).
+{
+  PROMPT_HEAD=$(printf '%s' "$INPUT" | jq -r '.prompt // empty' 2>/dev/null | head -c 12 || true)
+  case "$PROMPT_HEAD" in
+    "<channel"*) : ;;
+    *) rm -f "$SDIR/unattended.json" 2>/dev/null || true ;;
+  esac
+} || true
+
 # --- 1. Register session for the server's deferred auto-connect -------------
 {
   if [ -d "$MYC_DIR" ]; then
@@ -113,16 +126,30 @@ if [ -f "$CONN_FILE" ]; then
 fi
 
 SELF_REPO=$(jq -r '.repo // empty' "$SDIR/outbox.json" 2>/dev/null || true)
-CONTEXT=$(printf '%s' "$INBOX_JSON" | jq -r --arg placeName "$PLACE_NAME" --arg selfRepo "$SELF_REPO" --argjson now "$(date +%s)" '
+# When THIS server process booted (it stamps autoconnect.json at startup).
+BOOT_TS=$(jq -r '.ts // empty' "$SDIR/autoconnect.json" 2>/dev/null || true)
+CONTEXT=$(printf '%s' "$INBOX_JSON" | jq -r --arg placeName "$PLACE_NAME" --arg selfRepo "$SELF_REPO" --arg bootTs "$BOOT_TS" --argjson now "$(date +%s)" '
   # Snapshot freshness: inbox.json is rewritten whenever any peer frame arrives
   # (at least every heartbeat while the socket lives), so a snapshot minutes old
-  # means OUR connection is down — everything below is then a guess, and saying
-  # so beats rendering stale peers as live. The sidecar heals on its next beat.
-  ($now - ( (.ts // "") | sub("\\.[0-9]+";"") | try fromdateiso8601 catch $now )) as $snapAge |
+  # means something is off — everything below is then a guess, and saying so
+  # beats rendering stale peers as live. Two distinct causes, told apart by the
+  # server boot stamp:
+  #   - server booted AFTER the snapshot → a previous process of this same
+  #     session wrote it (claude --resume, /reload-plugins, a crash or reboot);
+  #     the new server rejoins the room at boot, so the join is landing NOW —
+  #     not a dead connection, and never grounds to declare Gigabuddy offline;
+  #   - same server → OUR socket is down; the sidecar reconnects on its own
+  #     heartbeat, and session_status is the live truth, not this file.
+  def iso: sub("\\.[0-9]+";"") | try fromdateiso8601 catch null;
+  ((.ts // "") | iso) as $snapTs |
+  ($now - ($snapTs // $now)) as $snapAge |
+  (($bootTs | iso) as $boot | $boot != null and $snapTs != null and $boot > $snapTs) as $restarted |
   "You are " + .self.displayName
   + (if $placeName != "" then " in " + $placeName else "" end)
-  + ( if $snapAge >= 180 then
-        "\n⚠ Awareness snapshot is " + (($snapAge/60)|floor|tostring) + "m old — live connection likely down; peer info below may be stale."
+  + ( if $restarted then
+        "\nℹ The Gigabuddy server restarted after this snapshot (session resumed / plugin reloaded) and is rejoining the room now — the door verbs reappear once joined. Do NOT treat Gigabuddy as offline: if a verb you need is missing, call session_status and retry. Peer info below is from before the restart."
+      elif $snapAge >= 180 then
+        "\n⚠ Awareness snapshot is " + (($snapAge/60)|floor|tostring) + "m old — the live socket may be down (it reconnects on its own heartbeat). Call session_status before treating Gigabuddy as offline; peer info below may be stale."
       else "" end )
   + "\n"
   # Peer ROSTER RETIRED (2026-08-22, idea:OJuidt4hrY_b): the full per-turn

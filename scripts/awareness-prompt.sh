@@ -31,14 +31,20 @@ SDIR="$GB_DIR/sessions/cc_$SESSION_ID"
 # The channel bridge stamps unattended.json before waking a session and the
 # Stop hook marks every turn's end (turn-ended.json); channel-guard.sh locks
 # only when BOTH exist — a wake, and no human prompt since the last turn ended.
-# THIS is the human prompt: clear both. Unless the prompt itself is the
-# injected channel event (guarded in case the harness routes those through
-# this hook too) — then the turn is channel-started and both must stand.
+# THIS is the human prompt: clear both, plus the guard's "a locked turn was
+# permitted to spawn subagents" marker (locked-spawn.json) — a new human turn
+# re-establishes that every running subagent is the human's. Unless the prompt
+# itself is the injected channel event (guarded in case the harness routes
+# those through this hook too) — then the turn is channel-started and all
+# three must stand. The guard's ask bookkeeping (asked.json, and the bridge's
+# relay-verdict.json — see channel-guard-post.sh) goes with them: it only
+# describes the lockdown that just ended.
 {
   PROMPT_HEAD=$(printf '%s' "$INPUT" | jq -r '.prompt // empty' 2>/dev/null | head -c 12 || true)
   case "$PROMPT_HEAD" in
     "<channel"*) : ;;
-    *) rm -f "$SDIR/unattended.json" "$SDIR/turn-ended.json" 2>/dev/null || true ;;
+    *) rm -f "$SDIR/unattended.json" "$SDIR/turn-ended.json" "$SDIR/locked-spawn.json" \
+            "$SDIR/asked.json" "$SDIR/relay-verdict.json" 2>/dev/null || true ;;
   esac
 } || true
 

@@ -20,6 +20,12 @@
 #   has the stamp but no marker, and that turn stays unlocked: the human is
 #   watching it. If the queued frame then starts its own turn after Stop, the
 #   marker is there and that turn is confined.
+#   A prompt is not the only proof of presence: when an "ask" below is answered
+#   Yes AT THE KEYBOARD, the human is here too. channel-guard-post.sh
+#   (PostToolUse) tells that apart from a verdict the sponsor relayed from the
+#   room (the bridge leaves relay-verdict.json for those) and clears the same
+#   three files — a locally approved call lifts the lockdown for the rest of
+#   the turn; a relayed approval covers that one call only.
 #
 # WHAT it allows — the posture depends on WHO woke us and on the sponsor's
 # policy file. The stamp carries `trust`, computed by the bridge from
@@ -41,8 +47,9 @@
 #     turn posts into a shared room (issue:SxYNJgM3aknV).
 #   - Everything else (Edit, Write, Bash, Agent, Web*, other MCP servers):
 #       sponsor/trusted wake + permission relay on → "ask": Claude Code opens
-#         its permission prompt, the bridge relays it to the room thread, and
-#         only the sponsor's `yes <id>` answers it. Zero tokens, one verdict.
+#         its permission prompt, the bridge relays it to the sponsor as a
+#         consent request (card in the thread + their inbox), and only the
+#         sponsor's approval answers it. Zero tokens, one verdict.
 #       sponsor/trusted wake, relay off → deny (an unanswerable "ask" hangs).
 #       other → deny. Reply-and-raise only.
 #     The policy file (`<scratch>/channel-policy.json`, sponsor-owned: it lives
@@ -56,6 +63,25 @@
 #     Values: allow | ask | deny. "ask" degrades to deny when relay is off.
 #     `trusted` falls back to the `sponsor` block when absent; "sponsor-only"
 #     reads include trusted.
+#   - StructuredOutput: always allowed. It is how a subagent hands its answer
+#     back — pure output, no side effect — so gating it protects nothing and
+#     silently discards the work (issue:5EldoPFv9RzW).
+#
+# WHOSE turn — background subagents belong to the turn that spawned them:
+#   The two stamps are session-wide, but a Workflow / Agent run the HUMAN
+#   started keeps running after the main turn yields (Stop fires while it is
+#   in flight). A wake landing then must not confine those subagents: their
+#   provenance is the human's prompt, and nothing about it changed when the
+#   room spoke. Claude Code marks every hook call made inside a subagent with
+#   `agent_id`, and a locked turn cannot spawn a subagent without its
+#   Agent/Task/Workflow/Skill call passing THIS guard — so absent evidence to
+#   the contrary, every subagent in the session is the human's and runs with
+#   the session's own permissions. The evidence: when a locked turn's spawner
+#   call resolves to allow or ask, the guard records `locked-spawn.json`, and
+#   from then on subagent calls take the woken turn's posture like any other
+#   (safe side — needs the relay on, or a policy allow, plus a woken turn
+#   choosing to spawn). The human's next prompt clears the marker with the
+#   stamps.
 #
 # HARD-DENY hook: unlike the other gigabuddy hooks this one intentionally
 # blocks tool calls. It must therefore fail OPEN on its own errors (a broken
@@ -86,7 +112,15 @@ SDIR="$GB_DIR/sessions/cc_$SESSION_ID"
 TOOL_NAME=$(printf '%s' "$INPUT" | jq -r '.tool_name // empty' 2>/dev/null || true)
 [ -z "$TOOL_NAME" ] && exit 0
 
+# A call from inside a subagent (`agent_id` set by the harness) belongs to the
+# turn that spawned it. Unless a LOCKED turn has been permitted to spawn (the
+# marker below), that turn was the human's — allow. See "WHOSE turn" above.
+AGENT_ID=$(printf '%s' "$INPUT" | jq -r '.agent_id // empty' 2>/dev/null || true)
+SPAWN_MARK="$SDIR/locked-spawn.json"
+if [ -n "$AGENT_ID" ] && [ ! -f "$SPAWN_MARK" ]; then exit 0; fi
+
 STAMP=$(cat "$SDIR/unattended.json" 2>/dev/null || echo '{}')
+STAMP_TS=$(printf '%s' "$STAMP" | jq -r '.ts // "unknown time"' 2>/dev/null || echo "unknown time")
 RELAY=$(printf '%s' "$STAMP" | jq -r 'if .relay == true then "true" else "false" end' 2>/dev/null || echo false)
 WHO=$(printf '%s' "$STAMP" | jq -r '.from // "someone"' 2>/dev/null || echo someone)
 SENDER_ID=$(printf '%s' "$STAMP" | jq -r '.senderId // empty' 2>/dev/null || true)
@@ -124,17 +158,30 @@ deny() {
 ask() {
   local reason="$1"
   local escaped
+  # Record WHICH call was escalated so the PostToolUse half
+  # (channel-guard-post.sh) can tell, when it runs, who answered: the sponsor
+  # from the room (the bridge leaves a relay-verdict) or the human at the
+  # keyboard — whose approval lifts the lockdown like a prompt would.
+  local tool_use_id
+  tool_use_id=$(printf '%s' "$INPUT" | jq -r '.tool_use_id // empty' 2>/dev/null || true)
+  jq -nc --arg tool "$TOOL_NAME" --arg toolUseId "$tool_use_id" --arg agentId "$AGENT_ID" \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    '{tool: $tool, toolUseId: $toolUseId, agentId: $agentId, ts: $ts}' > "$SDIR/asked.json.tmp" 2>/dev/null \
+    && mv "$SDIR/asked.json.tmp" "$SDIR/asked.json" 2>/dev/null || true
   escaped=$(printf '%s' "$reason" | jq -Rs . 2>/dev/null) || exit 0
   printf '{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":%s}}\n' "$escaped"
   exit 0
 }
 
-TAIL="The lockdown lifts when the user next types in this session. (Set GIGABUDDY_CHANNEL_GUARD=open before launching to disable it; <scratch>/channel-policy.json tunes it.)"
+# Name the cause so an operator can tell a lockdown from a broken tool: the
+# wake stamp (who, when) and the turn boundary, both under this session's dir.
+TAIL="The lockdown lifts when the user next types in this session, or approves one of these prompts at the keyboard (an approval relayed from the room covers that one call only). Cause: $SDIR/unattended.json (wake from $WHO at $STAMP_TS) together with turn-ended.json in the same dir — a wake arrived and no human prompt has followed. (Set GIGABUDDY_CHANNEL_GUARD=open before launching to disable it; $GB_DIR/channel-policy.json tunes it per tool.)"
 
 # --- 1. Collaboration surface: always allowed -------------------------------
+# StructuredOutput is a subagent's return value, not an action on the machine.
 case "$TOOL_NAME" in
   mcp__*gigabuddy*__*) exit 0 ;;
-  ToolSearch|TaskOutput|ListAgents|AskUserQuestion) exit 0 ;;
+  ToolSearch|TaskOutput|ListAgents|AskUserQuestion|StructuredOutput) exit 0 ;;
 esac
 
 # --- 2. Reads: inside the repo only, never dotfiles under $HOME ---------------
@@ -200,8 +247,21 @@ esac
 # dialog would sit unanswered until the user returns. Deny instead.
 if [ "$POSTURE" = "ask" ] && [ "$RELAY" != "true" ]; then POSTURE=deny; fi
 
+# A locked turn about to spawn subagents (allowed outright, or handed to the
+# sponsor to approve — we cannot see the verdict, so count the attempt): from
+# here on, subagent calls are no longer presumed the human's. See "WHOSE turn".
+if [ "$POSTURE" != "deny" ]; then
+  case "$TOOL_NAME" in
+    Agent|Task|Workflow|Skill)
+      printf '{"ts":"%s","tool":"%s","from":%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$TOOL_NAME" \
+        "$(printf '%s' "$WHO" | jq -Rs . 2>/dev/null || echo '""')" > "$SPAWN_MARK.tmp" 2>/dev/null \
+        && mv "$SPAWN_MARK.tmp" "$SPAWN_MARK" 2>/dev/null || true
+      ;;
+  esac
+fi
+
 case "$POSTURE" in
   allow) exit 0 ;;
-  ask) ask "Unattended: this turn was started by $SUBJECT while the user is away. $TOOL_NAME needs the sponsor's approval — the prompt is relayed to the room thread and only the sponsor's \`yes <id>\` answers it. If it is not approved, reply in the thread and capture the work with \`raise\`. $TAIL" ;;
+  ask) ask "Unattended: this turn was started by $SUBJECT while the user is away. $TOOL_NAME needs the sponsor's approval — the prompt is relayed to them as a consent request (a card in the room thread and their inbox) and only the sponsor can approve it; if the user is in fact at this keyboard, their Yes here lifts the lockdown for the rest of the turn. If it is not approved, reply in the thread and capture the work with \`raise\`. $TAIL" ;;
   *) deny "Unattended lockdown: this turn was started by $SUBJECT while the user is away, so only conversation and in-repo reads are allowed — the gigabuddy tools, Read/Grep/Glob. Reply in the thread, capture any requested work with \`raise\`, and stop. $TAIL" ;;
 esac

@@ -32,6 +32,15 @@
     ],
     "PostToolUse": [
       {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/channel-guard-post.sh"
+          }
+        ]
+      },
+      {
         "matcher": "Edit|Write|MultiEdit|Bash|TaskCreate",
         "hooks": [
           {

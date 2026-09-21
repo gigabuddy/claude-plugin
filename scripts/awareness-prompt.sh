@@ -27,6 +27,29 @@ GB_DIR="$(gigabuddy_dir)"
 # the host session id verbatim; mirrors sessionDir() in scratch.ts).
 SDIR="$GB_DIR/sessions/cc_$SESSION_ID"
 
+# Has this machine signed in at all? client-core writes THREE credential kinds
+# (shared / user / agent — libs/client-core/src/lib/credentials.ts), each with a
+# staging sibling, and a multi-account setup keeps a copy of every store under
+# accounts/<name>/ (accounts.ts). This used to stat the shared pair alone, so an
+# agent- or user-only login — which is what the plugin's own `login` writes —
+# read as "never signed in" and nudged on the first prompt of EVERY session
+# (issue:C7j959GnfM--). Glob the stores instead: a new credential kind cannot
+# reintroduce the bug.
+#
+# The credential home is client state (~/.gigabuddy, GIGABUDDY_HOME per
+# accounts.ts CONFIG_DIR) — deliberately NOT gigabuddy_dir(), which resolves the
+# repo-local .gigabuddy scratch dir this script shares with the MCP server.
+#
+# Pure bash, no forks: this runs on every prompt. An unmatched glob expands to
+# itself, which the -f test then rejects.
+has_gigabuddy_credentials() {
+  local home="${GIGABUDDY_HOME:-$HOME/.gigabuddy}" f
+  for f in "$home"/*credentials*.json "$home"/accounts/*/*credentials*.json; do
+    [ -f "$f" ] && return 0
+  done
+  return 1
+}
+
 # --- 0. A real prompt ends any unattended lockdown ---------------------------
 # The channel bridge stamps unattended.json before waking a session and the
 # Stop hook marks every turn's end (turn-ended.json); channel-guard.sh locks
@@ -81,7 +104,7 @@ if [ ! -f "$INBOX" ]; then
   # server's stderr hint is invisible in normal use, and the login tool may
   # be deferred out of the agent's visible tool list). Surface it once per
   # session so the agent offers the in-chat `login` flow.
-  if [ ! -f "$HOME/.gigabuddy/credentials.json" ] && [ ! -f "$HOME/.gigabuddy/credentials.staging.json" ]; then
+  if ! has_gigabuddy_credentials; then
     NUDGE_FLAG="${TMPDIR:-/tmp}/gigabuddy-login-nudge-$SESSION_ID"
     if [ ! -f "$NUDGE_FLAG" ]; then
       : > "$NUDGE_FLAG" 2>/dev/null || true

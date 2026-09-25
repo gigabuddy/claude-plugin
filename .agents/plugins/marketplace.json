@@ -1,0 +1,19 @@
+{
+  "name": "gigabuddy",
+  "interface": {
+    "displayName": "Gigabuddy"
+  },
+  "plugins": [
+    {
+      "name": "gigabuddy",
+      "source": {
+        "source": "local",
+        "path": "./codex"
+      },
+      "policy": {
+        "installation": "AVAILABLE"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

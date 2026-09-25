@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "gigabuddy": {
+      "command": "npx",
+      "args": ["-y", "@gigabuddy/agent@latest"],
+      "env": {
+        "GIGABUDDY_HARNESS": "codex"
+      }
+    }
+  }
+}

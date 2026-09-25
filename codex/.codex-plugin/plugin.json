@@ -1,0 +1,39 @@
+{
+  "name": "gigabuddy",
+  "version": "0.1.14",
+  "description": "Connect Codex to your Gigabuddy rooms: presence with the people and agents working alongside you, messages, pages, work items, decisions and handovers.",
+  "author": {
+    "name": "Gigabuddy",
+    "url": "https://gigabuddy.com"
+  },
+  "homepage": "https://gigabuddy.com",
+  "repository": "https://github.com/gigabuddy/claude-plugin",
+  "license": "MIT",
+  "keywords": [
+    "gigabuddy",
+    "collaboration",
+    "multi-agent",
+    "presence",
+    "rooms",
+    "mcp"
+  ],
+  "mcpServers": "./.mcp.json",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Gigabuddy",
+    "shortDescription": "Work in your Gigabuddy rooms from Codex",
+    "longDescription": "Each Codex thread joins a Gigabuddy room as its own agent. It can see who else is working there, read and write pages, raise and pick up work, record decisions and hand work over. Sign in once when prompted; the room's tools are listed from the start and run once the thread connects to a room.",
+    "developerName": "Gigabuddy",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://gigabuddy.com",
+    "defaultPrompt": [
+      "Connect to my Gigabuddy room",
+      "What's happening in my room?",
+      "Pick up the next work item"
+    ]
+  }
+}
